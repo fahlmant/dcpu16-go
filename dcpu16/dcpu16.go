@@ -15,12 +15,16 @@ const (
 // https://github.com/fahlmant/dcpu-specifications/blob/e154827c56664ad4a92ac2d404c6c21583ffee04/dcpu16.txt
 
 type DCPU16 struct {
-	Registers [8]uint16
-	PC        uint16
-	SP        uint16
-	EX        uint16
-	IA        uint16
-	RAM       [0x10000]uint16
+	Registers      [8]uint16
+	PC             uint16
+	SP             uint16
+	EX             uint16
+	IA             uint16
+	RAM            [0x10000]uint16
+	InterruptQueue []uint16
+	Queueing       bool
+	OnFire         bool
+	Devices        []Device
 }
 
 func (d *DCPU16) Step() {
@@ -29,14 +33,32 @@ func (d *DCPU16) Step() {
 	d.executeOpcode(opcode)
 }
 
-func (d *DCPU16) executeOpcode(opcode uint16) {
+func (d *DCPU16) Interrupt(message uint16) {
+	// Enqueue an interrupt with the attached messages
+	d.InterruptQueue = append(d.InterruptQueue, message)
+	// Absolute limit of the interrupt queue, DCPU catches on fire if breached
+	if len(d.InterruptQueue) > 256 {
+		d.OnFire = true
+	}
+}
 
+func (d *DCPU16) executeOpcode(opcode uint16) int {
+
+	cycles := 0
+	// The operation is the bottom 5 bits
+	op := opcode & 0x1F
+
+	// if the bottom 5 bits are 0s, this is a special opcode
+	if op == 0 {
+		cycles += d.executeSpecialOpcode(opcode)
+		return cycles
+	}
+
+	// Continue with basic opcode handling
 	// a is the top 6 bits of the 16-bit word
 	a := (opcode >> 10) & 0x3F
 	// b is the next 5 bits after a
 	b := (opcode >> 5) & 0x1F
-	// The operation is the bottom 5 bits
-	op := opcode & 0x1F
 
 	// Resolve the value of a before b's side effects can change it
 	aOperand := *d.operand(a, true)
@@ -203,6 +225,67 @@ func (d *DCPU16) executeOpcode(opcode uint16) {
 		d.Registers[I]--
 		d.Registers[J]--
 	}
+
+	return cycles
+}
+
+func (d *DCPU16) executeSpecialOpcode(opcode uint16) int {
+
+	cycles := 0
+	// a is the top 6 bits of the 16-bit word
+	a := (opcode >> 10) & 0x3F
+	// op is the next 5 bits after a in special opcodes
+	op := (opcode >> 5) & 0x1F
+
+	aOperand := d.operand(a, true) // Pointer rather than the value as the special opcodes use the pointer
+
+	switch {
+	// JSR a | pushes the address of the next instruction to the stack, then sets PC to a
+	case op == 0x1:
+		// Resolving the aOperand above already increments PC
+		d.SP--
+		d.RAM[d.SP] = d.PC
+		d.PC = *aOperand
+	// INT a | triggers a software interrupt with message a
+	case op == 0x8:
+		d.Interrupt(*aOperand)
+	// IAG a | sets a to IA
+	case op == 0x9:
+		*aOperand = d.IA
+	//  IAS a | sets IA to a
+	case op == 0xA:
+		d.IA = *aOperand
+	// RFI a | disables interrupt queueing, pops A from the stack, then pops PC from the stack
+	case op == 0xB:
+		d.Queueing = false
+		d.Registers[A] = d.RAM[d.SP]
+		d.SP++
+		d.PC = d.RAM[d.SP]
+		d.SP++
+	// IAQ a | if a is nonzero, interrupts will be added to the queue instead of triggered.
+	// if a is zero, interrupts will be triggered as normal again
+	case op == 0xC:
+		d.Queueing = *aOperand != 0
+	// HWN a | sets a to number of connected hardware devices
+	case op == 0x10:
+		*aOperand = uint16(len(d.Devices))
+	// HWQ a | sets A, B, C, X, Y registers to information about hardware a
+	// A+(B<<16) is a 32 bit word identifying the hardware id
+	// C is the hardware version
+	// X+(Y<<16) is a 32 bit word identifying the manufacturer
+	case op == 0x11:
+		device := d.Devices[*aOperand]
+		d.Registers[A] = uint16(device.ID())
+		d.Registers[B] = uint16(device.ID() >> 16)
+		d.Registers[C] = device.Version()
+		d.Registers[X] = uint16(device.Manufacturer())
+		d.Registers[Y] = uint16(device.Manufacturer() >> 16)
+	//  HWI a | sends an interrupt to hardware a
+	case op == 0x12:
+		device := d.Devices[*aOperand]
+		device.HandleInterrupt(d)
+	}
+	return cycles
 }
 
 // Grabs the next 16-bit word from RAM at the PC,
