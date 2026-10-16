@@ -27,17 +27,19 @@ type DCPU16 struct {
 	Devices        []Device
 }
 
-func (d *DCPU16) Step() {
+func (d *DCPU16) Step() int {
 
 	if d.OnFire {
-		return
+		return 0
 	}
 
 	// Handle interrupts
 	d.processInterrupt()
 	// Load 16-bit opcode and executes it
 	opcode := d.nextWord()
-	d.executeOpcode(opcode)
+	cycles := d.executeOpcode(opcode)
+
+	return cycles
 }
 
 func (d *DCPU16) Interrupt(message uint16) {
@@ -100,26 +102,31 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 	// SET b, a | sets b to a
 	case op == 0x01:
 		*bOperand = aOperand
+		cycles = 1
 	// ADD b, a | sets b to b+a, sets EX to 0x0001 if there's an overflow, 0 otherwise
 	case op == 0x02:
 		sum := uint32(*bOperand) + uint32(aOperand)
 		*bOperand = uint16(sum)
 		d.EX = uint16(sum >> 16)
+		cycles = 2
 	// SUB b, a; sets b to b-a, sets EX to 0xffff if there's an underflow, 0 otherwise
 	case op == 0x03:
 		diff := uint32(*bOperand) - uint32(aOperand)
 		*bOperand = uint16(diff)
 		d.EX = uint16(diff >> 16)
+		cycles = 2
 	// MUL b, a | sets b to b*a, sets EX to ((b*a)>>16)&0xffff
 	case op == 0x04:
 		product := uint32(*bOperand) * uint32(aOperand)
 		*bOperand = uint16(product)
 		d.EX = uint16(product>>16) & 0xffff
+		cycles = 2
 	// MLI b, a | same as MUL, but treat b, a as signed
 	case op == 0x05:
 		product := int32(int16(*bOperand)) * int32(int16(aOperand))
 		*bOperand = uint16(product)
 		d.EX = uint16(product>>16) & 0xffff
+		cycles = 2
 	// DIV b,a | sets b to b/a, sets EX to ((b<<16)/a)&0xffff. if a==0, sets b and EX to 0
 	case op == 0x06:
 		a := uint32(aOperand)
@@ -132,6 +139,7 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 			*bOperand = uint16(diff)
 			d.EX = uint16(((b << 16) / a) & 0xffff)
 		}
+		cycles = 3
 	// DVI b, a | like DIV, but treat b, a as signed. Rounds towards 0
 	case op == 0x07:
 		a := int32(int16(aOperand))
@@ -144,6 +152,7 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 			*bOperand = uint16(diff)
 			d.EX = uint16(((b << 16) / a) & 0xffff)
 		}
+		cycles = 3
 	// MOD b, a | sets b to b%a. if a==0, sets b to 0 instead.
 	case op == 0x08:
 		if aOperand == 0 {
@@ -152,6 +161,7 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 		} else {
 			*bOperand = *bOperand % aOperand
 		}
+		cycles = 3
 	//MDI b, a  | like MOD, but treat b, a as signed.
 	case op == 0x09:
 		a := int32(int16(aOperand))
@@ -161,82 +171,98 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 		} else {
 			*bOperand = uint16(b % a)
 		}
+		cycles = 3
 	// AND b, a | sets b to b&a
 	case op == 0x0a:
 		*bOperand = *bOperand & aOperand
+		cycles = 1
 	// BOR b, a | sets b to b|a
 	case op == 0x0b:
 		*bOperand = *bOperand | aOperand
+		cycles = 1
 	// XOR b,a | sets b to b^a
 	case op == 0x0c:
 		*bOperand = *bOperand ^ aOperand
+		cycles = 1
 	// SHR b, a | sets b to b>>>a, sets EX to ((b<<16)>>a)&0xffff
 	case op == 0x0d:
 		a := uint32(aOperand)
 		b := uint32(*bOperand)
 		d.EX = uint16(((b << 16) >> a) & 0xffff)
 		*bOperand = uint16(b >> a)
+		cycles = 1
 	// ASR b, a | sets b to b>>a, sets EX to ((b<<16)>>>a)&0xffff
 	case op == 0x0e:
 		a := uint32(aOperand)
 		b := uint32(*bOperand)
 		d.EX = uint16(((b << 16) >> a) & 0xffff)
 		*bOperand = uint16(int16(b) >> a)
+		cycles = 1
 	// SHL b, a | sets b to b<<a, sets EX to ((b<<a)>>16)&0xffff
 	case op == 0x0f:
 		a := uint32(aOperand)
 		b := uint32(*bOperand)
 		d.EX = uint16(((b << a) >> 16) & 0xffff)
 		*bOperand = uint16(b << a)
+		cycles = 1
 	// IFB b, a | performs next instruction only if (b&a)!=0
 	case op == 0x10:
+		cycles = 2
 		if *bOperand&aOperand == 0 {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFC b, a | performs next instruction only if (b&a)==0
 	case op == 0x11:
+		cycles = 2
 		if *bOperand&aOperand != 0 {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFE b, a | performs next instruction only if b==a
 	case op == 0x12:
+		cycles = 2
 		if *bOperand != aOperand {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFN b, a | performs next instruction only if b!=a
 	case op == 0x13:
+		cycles = 2
 		if *bOperand == aOperand {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFG b, a | performs next instruction only if b>a
 	case op == 0x14:
+		cycles = 2
 		if *bOperand <= aOperand {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFA b, a | performs next instruction only if b>a (signed)
 	case op == 0x15:
+		cycles = 2
 		a := int32(int16(aOperand))
 		b := int32(int16(*bOperand))
 		if b <= a {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFL b, a | performs next instruction only if b<a
 	case op == 0x16:
+		cycles = 2
 		if *bOperand >= aOperand {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// IFU b, a | performs next instruction only if b<a (signed)
 	case op == 0x17:
+		cycles = 2
 		a := int32(int16(aOperand))
 		b := int32(int16(*bOperand))
 		if b >= a {
-			d.skipNextInstruction()
+			cycles += d.skipNextInstruction()
 		}
 	// ADX b, a | sets b to b+a+EX, sets EX to 0x0001 if there is an over-flow, 0 otherwise
 	case op == 0x1A:
 		sum := uint32(*bOperand) + uint32(aOperand) + uint32(d.EX)
 		*bOperand = uint16(sum)
 		d.EX = uint16(sum >> 16)
+		cycles = 3
 	// SBX b, a | sets b to b-a+EX, sets EX to 0xFFFF if there is an under-flow, 0 otherwise
 	case op == 0x1B:
 		diff := int32(*bOperand) - int32(aOperand) + int32(int16(d.EX))
@@ -246,16 +272,27 @@ func (d *DCPU16) executeOpcode(opcode uint16) int {
 		} else {
 			d.EX = 0
 		}
+		cycles = 3
 	// STI b, a | sets b to a, then increases I and J by 1
 	case op == 0x1E:
 		*bOperand = aOperand
 		d.Registers[I]++
 		d.Registers[J]++
+		cycles = 2
 	// STD b, a | sets b to a, then decreases I and J by 1
 	case op == 0x1F:
 		*bOperand = aOperand
 		d.Registers[I]--
 		d.Registers[J]--
+		cycles = 2
+	}
+
+	// Operands that read the next word cost one extra cycle each to look up
+	if usesNextWord(a) {
+		cycles++
+	}
+	if usesNextWord(b) {
+		cycles++
 	}
 
 	return cycles
@@ -278,15 +315,19 @@ func (d *DCPU16) executeSpecialOpcode(opcode uint16) int {
 		d.SP--
 		d.RAM[d.SP] = d.PC
 		d.PC = *aOperand
+		cycles = 3
 	// INT a | triggers a software interrupt with message a
 	case op == 0x8:
 		d.Interrupt(*aOperand)
+		cycles = 4
 	// IAG a | sets a to IA
 	case op == 0x9:
 		*aOperand = d.IA
+		cycles = 1
 	//  IAS a | sets IA to a
 	case op == 0xA:
 		d.IA = *aOperand
+		cycles = 1
 	// RFI a | disables interrupt queueing, pops A from the stack, then pops PC from the stack
 	case op == 0xB:
 		d.Queueing = false
@@ -294,13 +335,16 @@ func (d *DCPU16) executeSpecialOpcode(opcode uint16) int {
 		d.SP++
 		d.PC = d.RAM[d.SP]
 		d.SP++
+		cycles = 3
 	// IAQ a | if a is nonzero, interrupts will be added to the queue instead of triggered.
 	// if a is zero, interrupts will be triggered as normal again
 	case op == 0xC:
 		d.Queueing = *aOperand != 0
+		cycles = 2
 	// HWN a | sets a to number of connected hardware devices
 	case op == 0x10:
 		*aOperand = uint16(len(d.Devices))
+		cycles = 2
 	// HWQ a | sets A, B, C, X, Y registers to information about hardware a
 	// A+(B<<16) is a 32 bit word identifying the hardware id
 	// C is the hardware version
@@ -312,11 +356,17 @@ func (d *DCPU16) executeSpecialOpcode(opcode uint16) int {
 		d.Registers[C] = device.Version()
 		d.Registers[X] = uint16(device.Manufacturer())
 		d.Registers[Y] = uint16(device.Manufacturer() >> 16)
+		cycles = 4
 	//  HWI a | sends an interrupt to hardware a
 	case op == 0x12:
 		device := d.Devices[*aOperand]
-		device.HandleInterrupt(d)
+		cycles = 4 + device.HandleInterrupt(d)
 	}
+
+	if usesNextWord(a) {
+		cycles++
+	}
+
 	return cycles
 }
 
@@ -328,9 +378,11 @@ func (d *DCPU16) nextWord() uint16 {
 	return w
 }
 
-func (d *DCPU16) skipNextInstruction() {
+func (d *DCPU16) skipNextInstruction() int {
 
+	skipped := 0
 	for {
+		skipped++
 		// Load the next work and move the PC past it
 		word := d.nextWord()
 
@@ -350,7 +402,7 @@ func (d *DCPU16) skipNextInstruction() {
 		}
 		// A non-conditional ends the chain
 		if op < 0x10 || op > 0x17 {
-			return
+			return skipped
 		}
 	}
 }
