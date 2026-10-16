@@ -28,6 +28,13 @@ type DCPU16 struct {
 }
 
 func (d *DCPU16) Step() {
+
+	if d.OnFire {
+		return
+	}
+
+	// Handle interrupts
+	d.processInterrupt()
 	// Load 16-bit opcode and executes it
 	opcode := d.nextWord()
 	d.executeOpcode(opcode)
@@ -40,6 +47,31 @@ func (d *DCPU16) Interrupt(message uint16) {
 	if len(d.InterruptQueue) > 256 {
 		d.OnFire = true
 	}
+}
+
+func (d *DCPU16) processInterrupt() {
+
+	if d.Queueing || len(d.InterruptQueue) == 0 {
+		return
+	}
+
+	message := d.InterruptQueue[0]
+	d.InterruptQueue = d.InterruptQueue[1:]
+
+	if d.IA == 0 {
+		return
+	}
+
+	// Turn on queueing, save PC then A, jump to IA,
+	// put the message in A.
+	d.Queueing = true
+	d.SP--
+	d.RAM[d.SP] = d.PC
+	d.SP--
+	d.RAM[d.SP] = d.Registers[A]
+	d.PC = d.IA
+	d.Registers[A] = message
+
 }
 
 func (d *DCPU16) executeOpcode(opcode uint16) int {
